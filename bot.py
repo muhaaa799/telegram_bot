@@ -1,10 +1,15 @@
 import json
 import time
 import os
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from openai import OpenAI
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
-# --- NEW DUMMY WEB SERVER TO TRICK RENDER ---
+
+# ==========================================
+# 1. DUMMY WEB SERVER TO TRICK RENDER
+# ==========================================
 class DummyHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -19,7 +24,10 @@ def run_dummy_server():
 
 # Start the dummy web server on a separate background thread
 threading.Thread(target=run_dummy_server, daemon=True).start()
-# Using environment variables so nobody steals your credits
+
+# ==========================================
+# 2. BOT CONFIGURATION & CREDENTIALS
+# ==========================================
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 AIPIPE_TOKEN = os.environ["AIPIPE_TOKEN"]
 LOG_URL = "https://raw.githubusercontent.com/muhaaa799/telegram_bot/main/run.jsonl"
@@ -27,15 +35,23 @@ LOG_FILE = "run.jsonl"
 
 client = OpenAI(base_url="https://aipipe.org/openai/v1", api_key=AIPIPE_TOKEN)
 
+# Keeps the last few messages per chat, so multi-turn questions work
 conversation_history = {}
 
+# ==========================================
+# 3. LOGGING & AUTO-PUSH LOGIC
+# ==========================================
 def log_event(event: dict):
     event["timestamp"] = time.time()
     with open(LOG_FILE, "a") as f:
         f.write(json.dumps(event) + "\n")
+    
     # Automatically push the updated log to GitHub
     os.system("git add run.jsonl && git commit -m log && git push")
 
+# ==========================================
+# 4. MESSAGE HANDLING & LLM LOGIC
+# ==========================================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_text = update.message.text
@@ -45,6 +61,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     history = conversation_history.setdefault(chat_id, [])
     history.append({"role": "user", "content": user_text})
 
+    # Ask the AI to work out the answer. The system prompt tells it exactly how to format the final reply
     system_prompt = (
         "You are a careful data analyst. The user's LAST message asks a "
         "question and tells you exactly what JSON shape to reply with. Work out the "
@@ -62,9 +79,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_text = response.choices[0].message.content.strip()
     history.append({"role": "assistant", "content": reply_text})
 
+    # Make sure we actually reply with valid JSON containing "log_url"
     try:
         parsed = json.loads(reply_text)
     except json.JSONDecodeError:
+        # Model added extra text - try to pull out just the {...} part.
         start, end = reply_text.find("{"), reply_text.rfind("}")
         parsed = json.loads(reply_text[start:end + 1])
 
@@ -74,6 +93,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_event({"type": "outgoing", "chat_id": chat_id, "text": final_reply})
     await update.message.reply_text(final_reply)
 
+# ==========================================
+# 5. START THE BOT
+# ==========================================
 app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
