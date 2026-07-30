@@ -4,7 +4,21 @@ import os
 from openai import OpenAI
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
+# --- NEW DUMMY WEB SERVER TO TRICK RENDER ---
+class DummyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive!")
 
+def run_dummy_server():
+    # Render assigns a port dynamically via the PORT environment variable
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), DummyHandler)
+    server.serve_forever()
+
+# Start the dummy web server on a separate background thread
+threading.Thread(target=run_dummy_server, daemon=True).start()
 # Using environment variables so nobody steals your credits
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 AIPIPE_TOKEN = os.environ["AIPIPE_TOKEN"]
